@@ -12,3 +12,4 @@ ckpt
 # Local experiment outputs and live training logs.
 exp/
 logs/
+outputs/
