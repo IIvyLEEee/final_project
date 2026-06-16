@@ -186,7 +186,51 @@ class MultiheadAttention(nn.Module):
         ################################################################################
         # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-        pass
+        assert k is not None and v is not None
+        q = q * self.scaling
+        src_len = k.size(1)
+
+        attn_weights = torch.bmm(q, k.transpose(1, 2))
+
+        if attn_mask is not None:
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask.unsqueeze(0)
+            if attn_mask.dtype == torch.bool:
+                attn_weights = attn_weights.masked_fill(attn_mask, float("-inf"))
+            else:
+                attn_weights = attn_weights + attn_mask
+
+        if key_padding_mask is not None:
+            key_padding_mask = key_padding_mask.to(torch.bool)
+            attn_weights = attn_weights.view(
+                bsz,
+                self.num_heads,
+                tgt_len,
+                src_len,
+            )
+            attn_weights = attn_weights.masked_fill(
+                key_padding_mask.view(bsz, 1, 1, src_len),
+                float("-inf"),
+            )
+            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+
+        attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)
+        attn_weights = attn_weights_float.type_as(attn_weights)
+        attn_probs = self.dropout_module(attn_weights)
+
+        attn = torch.bmm(attn_probs, v)
+        attn = (
+            attn.transpose(0, 1)
+            .contiguous()
+            .view(tgt_len, bsz, embed_dim)
+        )
+        attn = self.out_proj(attn)
+
+        if need_weights:
+            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.sum(dim=1) / self.num_heads
+        else:
+            attn_weights = None
 
         # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
         ################################################################################

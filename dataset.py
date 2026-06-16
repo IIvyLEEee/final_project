@@ -13,10 +13,6 @@ import torch.nn.functional as F
 from fairseq.data import data_utils, Dictionary, encoders
 from fairseq.data.fairseq_dataset import FairseqDataset
 from scipy.io import wavfile
-import cupy
-import python_speech_features_cuda
-python_speech_features_cuda.env.dtype = cupy.float32
-from python_speech_features_cuda import logfbank
 
 import utils
 
@@ -206,7 +202,16 @@ class AudioVideoDataset(FairseqDataset):
         ################################################################################
         # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-        pass
+        s, e = self.label_offsets_list[index]
+        with open(self.label_path, "rb") as f:
+            f.seek(s)
+            label_str = f.read(e - s).decode("utf-8").strip()
+        label_str = self.bpe_tokenizer.encode(label_str)
+        label = self.dictionary.encode_line(
+            label_str,
+            append_eos=True,
+            add_if_not_exist=False,
+        ).long()
 
         # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
         ################################################################################
@@ -247,7 +252,26 @@ class AudioVideoDataset(FairseqDataset):
         ################################################################################
         # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-        pass
+        video_path = video_name
+        if not os.path.isabs(video_path):
+            video_path = os.path.join(self.audio_root, video_path)
+
+        cap = cv2.VideoCapture(video_path)
+        frames = []
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frames.append(frame)
+        finally:
+            cap.release()
+        if len(frames) == 0:
+            raise ValueError(f"Unable to load video frames from {video_path}")
+        feats = np.stack(frames, axis=0)
+        feats = self.transform(feats)
+        feats = np.expand_dims(feats, axis=-1)
 
         # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
         ################################################################################
@@ -256,6 +280,8 @@ class AudioVideoDataset(FairseqDataset):
         return feats
     
     def load_audio(self, audio_name):
+        if not os.path.isabs(audio_name):
+            audio_name = os.path.join(self.audio_root, audio_name)
         sample_rate, wav_data = wavfile.read(audio_name)
         assert sample_rate == 16_000 and len(wav_data.shape) == 1
 
@@ -264,11 +290,47 @@ class AudioVideoDataset(FairseqDataset):
         # TODO:                                                                        #
         #  1. extract feature from wav_data with logfbank                              #
         #  2. stack consecutive frames (number=self.stack_order_audio)                 #
-        #  NOTE: use python_speech_features_cuda with cupy to reduce CPU overhead      #
+        #  NOTE: use python_speech_features CPU path to avoid CuPy/NumPy conversion   #
         ################################################################################
         # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-        pass
+        wav_data = wav_data.astype(np.float32, copy=False)
+        # Prefer GPU-backed logfbank (python_speech_features_cuda + cupy).
+        # Fall back to CPU implementation if GPU packages are unavailable.
+        try:
+            import cupy as cp
+            from python_speech_features_cuda import logfbank as cuda_logfbank
+            use_cuda = True
+        except Exception:
+            use_cuda = False
+            from python_speech_features import logfbank as cpu_logfbank
+
+        stack_order = int(self.stack_order_audio)
+
+        if use_cuda:
+            try:
+                default_dtype = cp.get_default_dtype()
+            except AttributeError:
+                default_dtype = cp.float64
+            wav_cp = cp.asarray(wav_data, dtype=default_dtype)
+            feats_cp, _energy = cuda_logfbank(wav_cp, samplerate=sample_rate)
+            feats_cp = feats_cp.astype(cp.float32)
+            n_frames = int(feats_cp.shape[0])
+            rem = n_frames % stack_order
+            if rem != 0:
+                pad = cp.zeros((stack_order - rem, feats_cp.shape[1]), dtype=feats_cp.dtype)
+                feats_cp = cp.concatenate([feats_cp, pad], axis=0)
+            feats_cp = feats_cp.reshape((feats_cp.shape[0] // stack_order, feats_cp.shape[1] * stack_order))
+            audio_feats = cp.asnumpy(feats_cp)
+        else:
+            feats = cpu_logfbank(wav_data, samplerate=sample_rate)
+            feats = np.asarray(feats, dtype=np.float32)
+            n_frames = int(feats.shape[0])
+            rem = n_frames % stack_order
+            if rem != 0:
+                pad = np.zeros((stack_order - rem, feats.shape[1]), dtype=feats.dtype)
+                feats = np.concatenate([feats, pad], axis=0)
+            audio_feats = feats.reshape((feats.shape[0] // stack_order, feats.shape[1] * stack_order))
 
         # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
         ################################################################################

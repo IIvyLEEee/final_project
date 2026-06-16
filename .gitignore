@@ -8,3 +8,7 @@ __pycache__/
 # Local datasets/checkpoints are symlinked into this workspace.
 data
 ckpt
+
+# Local experiment outputs and live training logs.
+exp/
+logs/

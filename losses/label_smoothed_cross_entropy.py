@@ -48,7 +48,28 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
     ################################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    if target.dim() == lprobs.dim() - 1:
+        target = target.unsqueeze(-1)
+
+    if ignore_index is not None:
+        pad_mask = target.eq(ignore_index)
+        target = target.masked_fill(pad_mask, 0)
+    else:
+        pad_mask = None
+
+    nll_loss = -lprobs.gather(dim=-1, index=target)
+    smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
+
+    if pad_mask is not None:
+        nll_loss = nll_loss.masked_fill(pad_mask, 0.0)
+        smooth_loss = smooth_loss.masked_fill(pad_mask, 0.0)
+
+    if reduce:
+        nll_loss = nll_loss.sum()
+        smooth_loss = smooth_loss.sum()
+
+    eps_i = epsilon / (lprobs.size(-1) - 1)
+    loss = (1.0 - epsilon - eps_i) * nll_loss + eps_i * smooth_loss
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ################################################################################
@@ -129,7 +150,32 @@ class LabelSmoothedCrossEntropyCriterion(_Loss):
         ################################################################################
         # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-        pass
+        loss, nll_loss = label_smoothed_nll_loss(
+            lprobs,
+            target,
+            self.eps,
+            ignore_index=self.padding_idx,
+            reduce=False,
+        )
+        non_pad_mask = target.ne(self.padding_idx)
+        if loss.dim() > non_pad_mask.dim():
+            non_pad_mask = non_pad_mask.unsqueeze(-1)
+
+        if self.focal_gamma > 0:
+            pt = torch.exp(-nll_loss)
+            loss = loss * (1.0 - pt).pow(self.focal_gamma)
+
+        if self.confidence_penalty > 0:
+            probs = torch.exp(lprobs)
+            penalty = (probs * lprobs).sum(dim=-1, keepdim=True)
+            loss = loss + self.confidence_penalty * penalty
+
+        loss = loss.masked_fill(~non_pad_mask, 0.0)
+        nll_loss = nll_loss.masked_fill(~non_pad_mask, 0.0)
+
+        if reduce:
+            loss = loss.sum()
+            nll_loss = nll_loss.sum()
 
         # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
         ################################################################################
