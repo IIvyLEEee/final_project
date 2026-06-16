@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.codex/
+.agents/
+
+# Local datasets/checkpoints are symlinked into this workspace.
+data
+ckpt
